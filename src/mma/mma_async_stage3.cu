@@ -46,22 +46,27 @@ __global__ void mmaAsyncStage3Kernel(const half *__restrict__ A, const half *__r
     const half *A_warp_ptr = &A(block_tile_i, warp_id); 
     const half *B_warp_ptr = &B(block_tile_j, warp_id);
 
-    ldgstsA_stage(false, warp_id, lane_id, A_warp_ptr, 0, K, smemA, 4, smem_store_off);
-    ldgstsB_stage(false, warp_id, lane_id, B_warp_ptr, 0, K, smemB, 2, smem_store_off);
+    ldgstsA_stage(warp_id, lane_id, A_warp_ptr, 0, K, smemA, smem_store_off);
+    ldgstsB_stage(warp_id, lane_id, B_warp_ptr, 0, K, smemB, smem_store_off);
 
     CP_ASYNC_COMMIT_GROUP();
 
     smem_store_idx = (smem_store_idx + 1) % K_STAGE;
     smem_store_off = smem_store_idx * smem_stage_off;
 
-    ldgstsA_stage(false, warp_id, lane_id, A_warp_ptr, CHUNK_K, K, smemA, 4, smem_store_off);
-    ldgstsB_stage(false, warp_id, lane_id, B_warp_ptr, CHUNK_K, K, smemB, 2, smem_store_off);
+    ldgstsA_stage(warp_id, lane_id, A_warp_ptr, CHUNK_K, K, smemA, smem_store_off);
+    ldgstsB_stage(warp_id, lane_id, B_warp_ptr, CHUNK_K, K, smemB, smem_store_off);
 
     CP_ASYNC_COMMIT_GROUP();
     CP_ASYNC_WAIT_GROUP(1);
 
     __syncthreads();
 
+    /* 
+        reg_store_idx = 0 or 1;  this stands for 1st dim of RA and RB
+        reg_load_idx = 0 or 1;  
+        when reg_store_idx=0, then reg_load_idx=1, and vise versa
+    */
     size_t reg_store_idx = 0;
     size_t reg_load_idx = 1;
 
@@ -96,12 +101,8 @@ __global__ void mmaAsyncStage3Kernel(const half *__restrict__ A, const half *__r
         smem_store_idx = (smem_store_idx + 1) % K_STAGE;
         smem_store_off = smem_store_idx * smem_stage_off;
 
-        ldgstsA_stage(true, warp_id, lane_id, A_warp_ptr, tile_k, K, smemA, 
-                      4/CHUNK_K, smem_store_off);
-
-        ldgstsB_stage(true, warp_id, lane_id, B_warp_ptr, tile_k, K, smemB,
-                      2/CHUNK_K, smem_store_off);
-
+        ldgstsA_stage(warp_id, lane_id, A_warp_ptr, tile_k, K, smemA, smem_store_off);
+        ldgstsB_stage(warp_id, lane_id, B_warp_ptr, tile_k, K, smemB, smem_store_off);
 
         CP_ASYNC_COMMIT_GROUP();
         CP_ASYNC_WAIT_GROUP(1);

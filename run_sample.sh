@@ -40,9 +40,9 @@ benchmark_hgemm() {
     #dims=(256 512 768 1024 1536 2048 3072 4096 5120 6144 7168 8192)
     #dims=(2048 3072 4096 5120 6144 7168)
     #dims=(2048)
-    dims=(4096)
+    #dims=(4096)
     #dims=(7168)
-    #dims=(8192)
+    dims=(8192)
 
     # lock freq
     sudo nvidia-smi -pm 1

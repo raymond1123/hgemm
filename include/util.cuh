@@ -405,12 +405,10 @@ void __device__ __inline__ ldgstsB_async(const size_t warp_id, const size_t lane
 }
 
 /* ============== stage_2 version ============= */
-
-void __device__ __inline__ ldgstsA_stage(bool sec_loop,
-                                         const size_t warp_id, const size_t lane_id, 
+void __device__ __inline__ ldgstsA_stage(const size_t warp_id, const size_t lane_id, 
                                          const half* A_warp_ptr, 
                                          size_t tile_k, size_t K, half* smemA,
-                                         int iters, const size_t smem_store_off) {
+                                         const size_t smem_store_off) {
 
     const half *A_warp_tile = A_warp_ptr+tile_k*MMA_K;
 
@@ -421,7 +419,7 @@ void __device__ __inline__ ldgstsA_stage(bool sec_loop,
     size_t col_A = (lane_col+((row_A&7)>>1))&3;
 
     #pragma unroll
-    for (size_t i = 0; i < iters; ++i) {
+    for (size_t i = 0; i < 4; ++i) {
         // load current data
         uint32_t A_smem_lane_addr = __cvta_generic_to_shared(SMEMA(row_A,0)) + col_A*sizeof(float4);
         CP_ASYNC_CG(A_smem_lane_addr, A_lane_ptr, sizeof(float4));
@@ -430,23 +428,12 @@ void __device__ __inline__ ldgstsA_stage(bool sec_loop,
         A_lane_ptr = (float4*)((half *)A_lane_ptr + LDGSTS_CP_NUM*K);
         row_A += LDGSTS_CP_NUM;
     }
-
-    if(sec_loop) {
-        for (size_t i = (CHUNK_K - 1) * iters; i < 4; ++i) {
-            uint32_t A_smem_lane_addr = __cvta_generic_to_shared(SMEMA(row_A,0)) + col_A*sizeof(float4);
-            CP_ASYNC_CG(A_smem_lane_addr, A_lane_ptr, sizeof(float4));
-
-            A_lane_ptr = (float4*)((half *)A_lane_ptr + LDGSTS_CP_NUM*K);
-            row_A += LDGSTS_CP_NUM;
-        }
-    }
 }
 
-void __device__ __inline__ ldgstsB_stage(bool sec_loop,
-                                         const size_t warp_id, const size_t lane_id, 
+void __device__ __inline__ ldgstsB_stage(const size_t warp_id, const size_t lane_id, 
                                          const half* B_warp_ptr, 
                                          size_t tile_k, size_t K, half* smemB,
-                                         int iters, const size_t smem_store_off) {
+                                         const size_t smem_store_off) {
 
     const half *B_warp_tile = B_warp_ptr+tile_k*MMA_K;
 
@@ -457,7 +444,7 @@ void __device__ __inline__ ldgstsB_stage(bool sec_loop,
     size_t col_B = (lane_row+((row_B&7)>>1))&3;
 
     #pragma unroll
-    for (size_t i = 0; i < iters; ++i) {
+    for (size_t i = 0; i < 2; ++i) {
         // load current data
         uint32_t B_smem_lane_addr = __cvta_generic_to_shared(SMEMB(row_B,0)) + col_B*sizeof(float4);
         CP_ASYNC_CG(B_smem_lane_addr, B_lane_ptr, sizeof(float4));
@@ -465,16 +452,6 @@ void __device__ __inline__ ldgstsB_stage(bool sec_loop,
         // prepare the next 8 rows 
         B_lane_ptr = (float4*)((half *)B_lane_ptr + LDGSTS_CP_NUM* K);
         row_B += LDGSTS_CP_NUM;
-    }
-
-    if(sec_loop) {
-        for (size_t i = (CHUNK_K - 1) * iters; i < 2; ++i) {
-            uint32_t B_smem_lane_addr = __cvta_generic_to_shared(SMEMB(row_B,0)) + col_B*sizeof(float4);
-            CP_ASYNC_CG(B_smem_lane_addr, B_lane_ptr, sizeof(float4));
-
-            B_lane_ptr = (float4*)((half *)B_lane_ptr + LDGSTS_CP_NUM* K);
-            row_B += LDGSTS_CP_NUM;
-        }
     }
 }
 

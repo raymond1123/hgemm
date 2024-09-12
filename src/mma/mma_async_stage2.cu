@@ -23,6 +23,7 @@ __global__ void mmaAsyncStage2Kernel(const half *__restrict__ A, const half *__r
     const size_t warp_id = threadIdx.x>>5;  // warp_id=0,1,...,7
     const size_t lane_id = threadIdx.x&31;
 
+    /* RA & RB is actually double buffer (1st dim is 2) */
     uint32_t RA[2][WARP_COL_TILES][4]; // RA[2][4][4]
     uint32_t RB[2][WARP_ROW_TILES][2]; // RB[2][8][2]
 
@@ -30,7 +31,7 @@ __global__ void mmaAsyncStage2Kernel(const half *__restrict__ A, const half *__r
     uint32_t RC[WARP_COL_TILES][WARP_ROW_TILES][2];
     memset(RC, 0, sizeof(RC));
 
-    /* step 1: block swizzle (the same as base version) */
+    /* block swizzle (the same as base version) */
     size_t block_tile_i;
     size_t block_tile_j;
     swizzle(&block_tile_i, &block_tile_j);
@@ -48,38 +49,61 @@ __global__ void mmaAsyncStage2Kernel(const half *__restrict__ A, const half *__r
     size_t smem_store_off = 0;
     size_t smem_load_off = 0;
 
-    ldgstsA_stage(false, warp_id, lane_id, A_warp_ptr, 0, K, smemA, 4, smem_store_off);
-    ldgstsB_stage(false, warp_id, lane_id, B_warp_ptr, 0, K, smemB, 2, smem_store_off);
+    /* 
+        reg_store_idx = 0 or 1;  this stands for 1st dim of RA and RB
+        reg_load_idx = 0 or 1;  
+        when reg_store_idx=0, then reg_load_idx=1, and vise versa
+    */
+    size_t reg_store_idx = 0, reg_load_idx = 1;
+
+    /* ============================================================================
+    =========== first load tile 0 of Matrix A and B to RA[0] and RB[0] =========== 
+    ============================================================================== */
+    /* from HBM to SRAM */
+    ldgstsA_stage(warp_id, lane_id, A_warp_ptr, 0, K, smemA, smem_store_off);
+    ldgstsB_stage(warp_id, lane_id, B_warp_ptr, 0, K, smemB, smem_store_off);
 
     CP_ASYNC_COMMIT_GROUP();
     CP_ASYNC_WAIT_GROUP(0);
 
     __syncthreads();
 
-    size_t reg_store_idx = 0;
-    size_t reg_load_idx = 1;
+    /* from SRAM to Register */
+    #pragma unroll
+    for (size_t i = 0; i < WARP_COL_TILES; ++i) {
+        /* load tile 0 data from SRAM to RA[reg_store_idx] */
+        ldsA_stage2(i, 0, reg_store_idx, smem_load_off, warp_id, lane_id, smemA, RA);
+    }
 
     #pragma unroll
-    for (size_t i = 0; i < WARP_COL_TILES; ++i)
-        ldsA_stage2(i, 0, reg_store_idx, smem_load_off,warp_id, lane_id, smemA, RA);
-
-    #pragma unroll
-    for (size_t j = 0; j < WARP_ROW_TILES; ++j)
+    for (size_t j = 0; j < WARP_ROW_TILES; ++j) {
+        /* load tile 0 data from SRAM to RB[reg_store_idx] */
         ldsB_stage2(j, 0, reg_store_idx, smem_load_off, warp_id, lane_id, smemB, RB);
+    }
+    /* =========== load tile 0 done =========== */
 
     #pragma unroll
     for (size_t tile_k = CHUNK_K * (K_STAGE - 1); tile_k < K_tiles; tile_k += CHUNK_K) {
-        reg_store_idx ^= 1;
-        reg_load_idx ^= 1;
+        reg_store_idx ^= 1; // every time in here: reg_store_idx = 1
+        reg_load_idx ^= 1;  // every time in here: reg_load_idx = 0
 
         #pragma unroll
-        for (size_t i = 0; i < WARP_COL_TILES; ++i)
+        for (size_t i = 0; i < WARP_COL_TILES; ++i) {
+            /* load tile 1 data from SRAM to RA[reg_store_idx] */
             ldsA_stage2(i, 1, reg_store_idx, smem_load_off,warp_id, lane_id, smemA, RA);
+        }
 
         #pragma unroll
-        for (size_t j = 0; j < WARP_ROW_TILES; ++j)
+        for (size_t j = 0; j < WARP_ROW_TILES; ++j) {
+            /* load tile 1 data from SRAM to RB[reg_store_idx] */
             ldsB_stage2(j, 1, reg_store_idx, smem_load_off, warp_id, lane_id, smemB, RB);
+        }
 
+        /* 
+            IMPORTANT! 
+            while load tile 1 data from SRAM to Register, calc tile 0 data 
+            which means loading tile1 and calc tile0 is parallel!
+        */
         #pragma unroll
         for (size_t i = 0; i < WARP_COL_TILES; ++i) {
             #pragma unroll
@@ -90,23 +114,25 @@ __global__ void mmaAsyncStage2Kernel(const half *__restrict__ A, const half *__r
         smem_store_idx = (smem_store_idx + 1) % K_STAGE;
         smem_store_off = smem_store_idx * smem_stage_off;
 
-        ldgstsA_stage(true, warp_id, lane_id, A_warp_ptr, tile_k, K, smemA, 
-                      4/CHUNK_K, smem_store_off);
-
-        ldgstsB_stage(true, warp_id, lane_id, B_warp_ptr, tile_k, K, smemB,
-                      2/CHUNK_K, smem_store_off);
+        ldgstsA_stage(warp_id, lane_id, A_warp_ptr, tile_k, K, smemA, smem_store_off);
+        ldgstsB_stage(warp_id, lane_id, B_warp_ptr, tile_k, K, smemB, smem_store_off);
 
         CP_ASYNC_COMMIT_GROUP();
         CP_ASYNC_WAIT_GROUP(0);
 
         __syncthreads();
 
-        reg_store_idx ^= 1;
-        reg_load_idx ^= 1;
+        reg_store_idx ^= 1; // every time in here: reg_store_idx = 0
+        reg_load_idx ^= 1;  // every time in here: reg_load_idx = 1
 
         smem_load_idx = (smem_load_idx + 1) % K_STAGE;
         smem_load_off = smem_load_idx * smem_stage_off;
 
+        /* 
+            IMPORTANT! 
+            while load tile 0 data from SRAM to Register, calc tile 1 data 
+            which means loading tile0 and calc tile1 is parallel!
+        */
         #pragma unroll
         for (size_t i = 0; i < WARP_COL_TILES; ++i)
             ldsA_stage2(i, 0, reg_store_idx, smem_load_off, warp_id, lane_id, smemA, RA);

@@ -45,24 +45,24 @@ __global__ void mmaAsyncStage4Kernel(const half *__restrict__ A, const half *__r
     size_t smem_store_off = 0;
     size_t smem_load_off = 0;
 
-    ldgstsA_stage(false, warp_id, lane_id, A_warp_ptr, 0, K, smemA, 4, smem_store_off);
-    ldgstsB_stage(false, warp_id, lane_id, B_warp_ptr, 0, K, smemB, 2, smem_store_off);
+    ldgstsA_stage(warp_id, lane_id, A_warp_ptr, 0, K, smemA, smem_store_off);
+    ldgstsB_stage(warp_id, lane_id, B_warp_ptr, 0, K, smemB, smem_store_off);
 
     CP_ASYNC_COMMIT_GROUP();
 
     smem_store_idx = (smem_store_idx + 1) % K_STAGE;
     smem_store_off = smem_store_idx * smem_stage_off;
 
-    ldgstsA_stage(false, warp_id, lane_id, A_warp_ptr, CHUNK_K, K, smemA, 4, smem_store_off);
-    ldgstsB_stage(false, warp_id, lane_id, B_warp_ptr, CHUNK_K, K, smemB, 2, smem_store_off);
+    ldgstsA_stage(warp_id, lane_id, A_warp_ptr, CHUNK_K, K, smemA, smem_store_off);
+    ldgstsB_stage(warp_id, lane_id, B_warp_ptr, CHUNK_K, K, smemB, smem_store_off);
 
     CP_ASYNC_COMMIT_GROUP();
 
     smem_store_idx = (smem_store_idx + 1) % K_STAGE;
     smem_store_off = smem_store_idx * smem_stage_off;
 
-    ldgstsA_stage(false, warp_id, lane_id, A_warp_ptr, 2*CHUNK_K, K, smemA, 4, smem_store_off);
-    ldgstsB_stage(false, warp_id, lane_id, B_warp_ptr, 2*CHUNK_K, K, smemB, 2, smem_store_off);
+    ldgstsA_stage(warp_id, lane_id, A_warp_ptr, 2*CHUNK_K, K, smemA, smem_store_off);
+    ldgstsB_stage(warp_id, lane_id, B_warp_ptr, 2*CHUNK_K, K, smemB, smem_store_off);
 
     CP_ASYNC_COMMIT_GROUP();
     CP_ASYNC_WAIT_GROUP(2);
@@ -103,10 +103,8 @@ __global__ void mmaAsyncStage4Kernel(const half *__restrict__ A, const half *__r
         smem_store_idx = (smem_store_idx + 1) % K_STAGE;
         smem_store_off = smem_store_idx * smem_stage_off;
 
-        ldgstsA_stage(true, warp_id, lane_id, A_warp_ptr, tile_k, K, smemA,
-                      4/CHUNK_K, smem_store_off);
-        ldgstsB_stage(true, warp_id, lane_id, B_warp_ptr, tile_k, K, smemB,
-                      2/CHUNK_K, smem_store_off);
+        ldgstsA_stage(warp_id, lane_id, A_warp_ptr, tile_k, K, smemA, smem_store_off);
+        ldgstsB_stage(warp_id, lane_id, B_warp_ptr, tile_k, K, smemB, smem_store_off);
 
         CP_ASYNC_COMMIT_GROUP();
         CP_ASYNC_WAIT_GROUP(2);
