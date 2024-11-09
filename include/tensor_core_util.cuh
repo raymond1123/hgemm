@@ -30,7 +30,7 @@
 #define C_SMEM_OFFSET 64   // WARP_COLS
 
 #define BLOCK_STRIDE 16
-#define LDGSTS_CP_NUM 8
+#define LDGSTS_CP_ROWS 8
 #define PERMUTED_OFFSET 8
 #define PERMUTED_COLS 4
 
@@ -39,9 +39,11 @@
 
 #define SMEMA(i,j) (smemA+(i)*AB_SMEM_STRIDE+(j))
 #define SMEMB(i,j) (smemB+(i)*AB_SMEM_STRIDE+(j))
+#define SMEMC(i) (smemC+(i)*C_SMEM_STRIDE)
 
 #define A(i,j) A[((i)*(MMA_M)+(j)*BLOCK_ROWS/WARPS_PER_BLOCK)*K]
 #define B(i,j) B[((i)*(MMA_N)+(j)*BLOCK_COLS/WARPS_PER_BLOCK)*K]
+#define C(i,j) C[(i)*MMA_M*N+(j)*MMA_N]
 
 /* 
     block sizzle:
@@ -87,8 +89,9 @@ void __device__ __inline__ hm16n8k16(int i, int j, int reg_idx,
 
 /* ============== base version ============= */
 /* Matrix A from HBM to SRAM */
-__device__ void __inline__ ldgstsA_base(const size_t warp_id, const size_t lane_id, const half* A_warp_ptr, 
-                        size_t tile_k, size_t K, half* smemA) {
+__device__ void __inline__ ldgstsA_base(const size_t warp_id, const size_t lane_id, 
+                                        const half* A_warp_ptr, 
+                                        size_t tile_k, size_t K, half* smemA) {
 
     const half *A_warp_tile = A_warp_ptr+tile_k*MMA_K;
 
@@ -110,12 +113,11 @@ __device__ void __inline__ ldgstsA_base(const size_t warp_id, const size_t lane_
     #pragma unroll
     for (size_t i = 0; i < 4; ++i) {
         // load current data
-        //#define SMEMA(i,j) (smemA+(i)*AB_SMEM_STRIDE+(j))
         *(float4*)(SMEMA(row_A, col_A)) = *A_lane_ptr;
+        A_lane_ptr = (float4*)((half *)A_lane_ptr + LDGSTS_CP_ROWS*K);
 
-        // prepare the next 8 rows
-        A_lane_ptr = (float4*)((half *)A_lane_ptr + LDGSTS_CP_NUM*K);
-        row_A += LDGSTS_CP_NUM;
+        // prepare the next LDGSTS_CP_ROWS=8 rows
+        row_A += LDGSTS_CP_ROWS;
     }
 }
 
@@ -147,8 +149,8 @@ void __device__ __inline__ ldgstsB_base(const size_t warp_id, const size_t lane_
         *(float4*)(SMEMB(row_B, col_B)) = *B_lane_ptr;
 
         // prepare the next 8 rows 
-        B_lane_ptr = (float4*)((half *)B_lane_ptr + LDGSTS_CP_NUM* K);
-        row_B += LDGSTS_CP_NUM;
+        B_lane_ptr = (float4*)((half *)B_lane_ptr + LDGSTS_CP_ROWS* K);
+        row_B += LDGSTS_CP_ROWS;
     }
 }
 
@@ -163,12 +165,21 @@ void __device__ __inline__ ldsA_base(int i, int k_step,
                                 const size_t warp_id, const size_t lane_id,
                                 half* smemA, uint32_t RA[WARP_COL_TILES][4]) {
 
+    /* 
+        every block is splited into 2x4 warps 
+        every warp fetch 64x16 elements of Matrix A
+    */
     size_t warp_row = (warp_id>>1)*WARP_ROWS + i*MMA_M;
     size_t warp_col = k_step*MMA_K;
 
+    /* 
+        lane_id&15 = [0,1,...,15, 0,1,...,15]
+        lane_id>>4 = [0,1,2,3, ..., 0,1,2,3]
+    */
     size_t lane_row = warp_row + (lane_id&15);
     size_t lane_col = warp_col + ((lane_id>>4)<<3); 
 
+    //#define SMEMA(i,j) (smemA+(i)*AB_SMEM_STRIDE+(j))
     uint32_t A_smem_lane_addr =
         __cvta_generic_to_shared(SMEMA(lane_row, lane_col));
 
@@ -179,10 +190,18 @@ void __device__ __inline__ ldsA_base(int i, int k_step,
 void __device__ __inline__ ldsB_base(int j, int k_step, 
                                 const size_t warp_id, const size_t lane_id,
                                 half* smemB, uint32_t RB[WARP_COL_TILES][2]) {
-
+    /* 
+        every block is splited into 2x4 warps 
+        every warp fetch 16x64 elements of Matrix B
+    */
     size_t warp_row = (warp_id&1)*WARP_COLS + j*MMA_N;
     size_t warp_col = k_step*MMA_K;
 
+    /* 
+        for Matrix B, we only cares about the first 16 threads 
+        lane_id&7  = [0,1,...,7, 0,1,...,7]
+        lane_id>>3 = [0,...0,    1,...,1]
+    */
     size_t lane_row = warp_row + (lane_id&7);
     size_t lane_col = warp_col + (((lane_id>>3)&1)<<3); 
 
@@ -194,17 +213,22 @@ void __device__ __inline__ ldsB_base(int j, int k_step,
 
 /* store Matrix C result from Register RC to SRAM */
 void __device__ __inline__ stsC_base(int i, int j, const size_t warp_id, const size_t lane_id, 
-                                     half* smem_warp_tile_row_ptr, 
+                                     half* smem_warp_tile_ptr, 
                                      uint32_t RC[WARP_COL_TILES][WARP_ROW_TILES][2]) {
 
-    half *lane_ptr0 = smem_warp_tile_row_ptr + 
-                      (i * MMA_M + (lane_id>>2)) * C_SMEM_STRIDE +
-                      (warp_id&1) * C_SMEM_OFFSET + j * MMA_N +
+    /* 
+        lane_id>>2 = [0,0,0,0, 1,1,1,1, ..., 7,7,7,7]
+        lane_id&3  = [0,1,2,3, 0,1,2,3, ..., 0,1,2,3]
+    */
+    int row = i*MMA_M + (lane_id>>2);
+    int col = j*MMA_N;
+
+    half *lane_ptr0 = smem_warp_tile_ptr +
+                      row*C_SMEM_STRIDE + col +
                       (lane_id&3) * sizeof(uint32_t) / sizeof(half);
 
-    half *lane_ptr1 = smem_warp_tile_row_ptr + 
-                      (i * MMA_M + lane_id / 4 + 8) * C_SMEM_STRIDE +
-                      (warp_id&1) * C_SMEM_OFFSET + j * MMA_N +
+    half *lane_ptr1 = smem_warp_tile_ptr + 
+                      (row+8)*C_SMEM_STRIDE + col +
                       (lane_id&3) * sizeof(uint32_t) / sizeof(half);
 
     *((uint32_t *)(lane_ptr0)) = RC[i][j][0];
@@ -222,7 +246,6 @@ void __device__ __inline__ ldsC_base(int i, const int N,
         *((float4*)(smem_warp_stream_ptr + (i*2+(lane_id>>4))*C_SMEM_STRIDE)+(lane_id&15));
 
 }
-
 
 /* ============== permutation version ============= */
 /* 
@@ -245,8 +268,8 @@ void __device__ __inline__ ldgstsA_permute(const size_t warp_id, const size_t la
     for (size_t i = 0; i < 4; ++i) {
         *(float4*)(SMEMA(row_A, col_A)) = *A_lane_ptr;
 
-        A_lane_ptr = (float4*)((half *)A_lane_ptr + LDGSTS_CP_NUM*K);
-        row_A += LDGSTS_CP_NUM;
+        A_lane_ptr = (float4*)((half *)A_lane_ptr + LDGSTS_CP_ROWS*K);
+        row_A += LDGSTS_CP_ROWS;
     }
 }
 
@@ -271,8 +294,8 @@ void __device__ __inline__ ldgstsB_permute(const size_t warp_id, const size_t la
         *(float4*)(SMEMB(row_B, col_B)) = *B_lane_ptr;
 
         // prepare the next 8 rows 
-        B_lane_ptr = (float4*)((half *)B_lane_ptr + LDGSTS_CP_NUM* K);
-        row_B += LDGSTS_CP_NUM;
+        B_lane_ptr = (float4*)((half *)B_lane_ptr + LDGSTS_CP_ROWS* K);
+        row_B += LDGSTS_CP_ROWS;
     }
 }
 
@@ -309,7 +332,6 @@ void __device__ __inline__ ldsB_permute(int j, int k_step,
     size_t lane_row = warp_row + (lane_id&7);
     size_t lane_col = warp_col + (((lane_id>>3)&1)<<3) + ((((lane_id&7)&7)>>1)<<3);
     lane_col &= 31; 
-    //size_t lane_col = warp_col + (((lane_id>>3)&1)<<3); 
 
     uint32_t B_smem_lane_addr =
         __cvta_generic_to_shared(SMEMB(lane_row, lane_col));
@@ -375,8 +397,8 @@ void __device__ __inline__ ldgstsA_async(const size_t warp_id, const size_t lane
         CP_ASYNC_CG(A_smem_lane_addr, A_lane_ptr, sizeof(float4));
 
         // prepare the next 8 rows 
-        A_lane_ptr = (float4*)((half *)A_lane_ptr + LDGSTS_CP_NUM*K);
-        row_A += LDGSTS_CP_NUM;
+        A_lane_ptr = (float4*)((half *)A_lane_ptr + LDGSTS_CP_ROWS*K);
+        row_A += LDGSTS_CP_ROWS;
     }
 }
 
@@ -399,8 +421,8 @@ void __device__ __inline__ ldgstsB_async(const size_t warp_id, const size_t lane
         CP_ASYNC_CG(B_smem_lane_addr, B_lane_ptr, sizeof(float4));
 
         // prepare the next 8 rows 
-        B_lane_ptr = (float4*)((half *)B_lane_ptr + LDGSTS_CP_NUM* K);
-        row_B += LDGSTS_CP_NUM;
+        B_lane_ptr = (float4*)((half *)B_lane_ptr + LDGSTS_CP_ROWS* K);
+        row_B += LDGSTS_CP_ROWS;
     }
 }
 
@@ -425,8 +447,8 @@ void __device__ __inline__ ldgstsA_stage(const size_t warp_id, const size_t lane
         CP_ASYNC_CG(A_smem_lane_addr, A_lane_ptr, sizeof(float4));
 
         // prepare the next 8 rows 
-        A_lane_ptr = (float4*)((half *)A_lane_ptr + LDGSTS_CP_NUM*K);
-        row_A += LDGSTS_CP_NUM;
+        A_lane_ptr = (float4*)((half *)A_lane_ptr + LDGSTS_CP_ROWS*K);
+        row_A += LDGSTS_CP_ROWS;
     }
 }
 
@@ -450,8 +472,8 @@ void __device__ __inline__ ldgstsB_stage(const size_t warp_id, const size_t lane
         CP_ASYNC_CG(B_smem_lane_addr, B_lane_ptr, sizeof(float4));
 
         // prepare the next 8 rows 
-        B_lane_ptr = (float4*)((half *)B_lane_ptr + LDGSTS_CP_NUM* K);
-        row_B += LDGSTS_CP_NUM;
+        B_lane_ptr = (float4*)((half *)B_lane_ptr + LDGSTS_CP_ROWS* K);
+        row_B += LDGSTS_CP_ROWS;
     }
 }
 

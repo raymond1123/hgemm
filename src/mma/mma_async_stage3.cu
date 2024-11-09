@@ -5,6 +5,8 @@
 // Description: mma async stage3 hgemm
 
 #include "common.h"
+#include "tensor_core_util.cuh"
+
 #define K_STAGE 3
 
 __global__ void mmaAsyncStage3Kernel(const half *__restrict__ A, const half *__restrict__ B, half *__restrict__ C,
@@ -46,6 +48,7 @@ __global__ void mmaAsyncStage3Kernel(const half *__restrict__ A, const half *__r
     const half *A_warp_ptr = &A(block_tile_i, warp_id); 
     const half *B_warp_ptr = &B(block_tile_j, warp_id);
 
+    /* from HBM to SRAM */
     ldgstsA_stage(warp_id, lane_id, A_warp_ptr, 0, K, smemA, smem_store_off);
     ldgstsB_stage(warp_id, lane_id, B_warp_ptr, 0, K, smemB, smem_store_off);
 
@@ -54,6 +57,7 @@ __global__ void mmaAsyncStage3Kernel(const half *__restrict__ A, const half *__r
     smem_store_idx = (smem_store_idx + 1) % K_STAGE;
     smem_store_off = smem_store_idx * smem_stage_off;
 
+    /* from HBM to SRAM */
     ldgstsA_stage(warp_id, lane_id, A_warp_ptr, CHUNK_K, K, smemA, smem_store_off);
     ldgstsB_stage(warp_id, lane_id, B_warp_ptr, CHUNK_K, K, smemB, smem_store_off);
 
@@ -71,12 +75,16 @@ __global__ void mmaAsyncStage3Kernel(const half *__restrict__ A, const half *__r
     size_t reg_load_idx = 1;
 
     #pragma unroll
-    for (size_t i = 0; i < WARP_COL_TILES; ++i)
+    for (size_t i = 0; i < WARP_COL_TILES; ++i) {
+        /* load tile 0 data from SRAM to RA[reg_store_idx] */
         ldsA_stage2(i, 0, reg_store_idx, smem_load_off, warp_id, lane_id, smemA, RA); 
+    }
 
     #pragma unroll
-    for (size_t j = 0; j < WARP_ROW_TILES; ++j)
+    for (size_t j = 0; j < WARP_ROW_TILES; ++j) {
+        /* load tile 0 data from SRAM to RB[reg_store_idx] */
         ldsB_stage2(j, 0, reg_store_idx, smem_load_off, warp_id, lane_id, smemB, RB);
+    }
 
     #pragma unroll
     for (size_t tile_k = CHUNK_K * (K_STAGE - 1); tile_k < K_tiles; tile_k += CHUNK_K) {
@@ -91,6 +99,7 @@ __global__ void mmaAsyncStage3Kernel(const half *__restrict__ A, const half *__r
         for (size_t j = 0; j < WARP_ROW_TILES; ++j)
             ldsB_stage2(j, 1, reg_store_idx, smem_load_off, warp_id, lane_id, smemB, RB);
 
+        /* IMPORTANT! parallel here */
         #pragma unroll
         for (size_t i = 0; i < WARP_COL_TILES; ++i) {
             #pragma unroll
@@ -101,6 +110,7 @@ __global__ void mmaAsyncStage3Kernel(const half *__restrict__ A, const half *__r
         smem_store_idx = (smem_store_idx + 1) % K_STAGE;
         smem_store_off = smem_store_idx * smem_stage_off;
 
+        /* from HBM to SRAM */
         ldgstsA_stage(warp_id, lane_id, A_warp_ptr, tile_k, K, smemA, smem_store_off);
         ldgstsB_stage(warp_id, lane_id, B_warp_ptr, tile_k, K, smemB, smem_store_off);
 
@@ -123,6 +133,7 @@ __global__ void mmaAsyncStage3Kernel(const half *__restrict__ A, const half *__r
         for (size_t j = 0; j < WARP_ROW_TILES; ++j)
             ldsB_stage2(j, 0, reg_store_idx, smem_load_off, warp_id, lane_id, smemB, RB);
 
+        /* IMPORTANT! parallel here */
         #pragma unroll
         for (size_t i = 0; i < WARP_COL_TILES; ++i) {
             #pragma unroll

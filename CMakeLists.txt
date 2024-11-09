@@ -30,6 +30,15 @@ find_package (CUDA REQUIRED)
 unset (CUDA_USE_STATIC_CUDA_RUNTIME CACHE)
 option (CUDA_USE_STATIC_CUDA_RUNTIME OFF)
 
+# Python Interpreter
+find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+message(STATUS "Python include dirs: ${Python3_INCLUDE_DIRS}")
+
+execute_process(COMMAND ${Python3_EXECUTABLE} -m pybind11 --cmakedir 
+                OUTPUT_VARIABLE PYBIND11_CMAKEDIR OUTPUT_STRIP_TRAILING_WHITESPACE)
+# pybind11
+find_package(pybind11 REQUIRED PATHS ${PYBIND11_CMAKEDIR})
+
 SET(CUDA_VERBOSE_BUILD ${HGEMM_VERBOSE_MAKEFILE})
 SET(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -std=c++11 -Xptxas=-v -Xcompiler -fopenmp")
 if (${CMAKE_BUILD_TYPE} MATCHES "Debug")
@@ -48,6 +57,7 @@ include_directories (
     ${PROJECT_SOURCE_DIR}/include
     ${SYS_CUDART_PATH}/include
     ${GFLAGS_INCLUDE_DIR}
+    ${Python3_INCLUDE_DIRS}
 )
 
 link_directories (
@@ -58,11 +68,28 @@ link_directories (
 file (GLOB HGEMM_SRCS 
     ${PROJECT_SOURCE_DIR}/src/*.cu
     ${PROJECT_SOURCE_DIR}/src/mma/*.cu
+    ${PROJECT_SOURCE_DIR}/src/simd/*.cu
 )
+
+#file (GLOB PY_SRCS 
+#    ${PROJECT_SOURCE_DIR}/src/*.cu
+#    ${PROJECT_SOURCE_DIR}/src/mma/*.cu
+#)
+
+#file (GLOB PY_SRCS 
+#    ${PROJECT_SOURCE_DIR}/src/encap.cu
+#)
 
 cuda_add_executable (hgemm ${HGEMM_SRCS})
 target_link_libraries (hgemm -lcublas OpenMP::OpenMP_CXX ${GFLAGS_LIBRARIES})
 
 install (TARGETS hgemm RUNTIME DESTINATION bin)
 
+## pybind11
+#pybind11_add_module(py_hgemm ${PY_SRCS})
+
+## Link against the CUDA library
+#target_link_libraries(py_hgemm PUBLIC ${CUDA_LIBRARIES} 
+#                     -lcublas -lcudart 
+#                     Python3::Python)
 

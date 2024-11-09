@@ -33,7 +33,6 @@ __device__ __inline__ void swizzle(size_t* block_tile_i, size_t* block_tile_j) {
 * C 矩阵中 block 的排列方式在图中用 (i, j) 标识
 
   * 图中 (i,j) 就是代码中的 block_tile_i 与 block_tile_j
-  * block_tile_i 代表行，block_tile_j 代表列
 
 * 这里的 (i, j) 表示的顺序就是 **swizzle** (这里 swizzle stride 是 16)
 
@@ -295,91 +294,143 @@ void __device__ __inline__ hm16n8k16(int i, int j,
 * 这里的计算是 warp 级别的计算，并不只是单个 thread，要把 warp 看成一个整体
   * 所以计算需要的寄存器被分摊到 warp 中的每个 thread 里 
 
+
+
 ### load result from Register to SRAM
 
-```c++
-/* store Matrix C result from Register RC to SRAM */
-void __device__ __inline__ stsC_base(int i, int j, const size_t warp_id, const size_t lane_id, 
-                                     half* smem_warp_tile_row_ptr, 
-                                     uint32_t RC[WARP_COL_TILES][WARP_ROW_TILES][2]) {
+未完待续...
 
-    half *lane_ptr0 = smem_warp_tile_row_ptr + 
-                      (i * MMA_M + (lane_id>>2)) * C_SMEM_STRIDE +
-                      (warp_id&1) * C_SMEM_OFFSET + j * MMA_N +
-                      (lane_id&3) * sizeof(uint32_t) / sizeof(half);
 
-    half *lane_ptr1 = smem_warp_tile_row_ptr + 
-                      (i * MMA_M + lane_id / 4 + 8) * C_SMEM_STRIDE +
-                      (warp_id&1) * C_SMEM_OFFSET + j * MMA_N +
-                      (lane_id&3) * sizeof(uint32_t) / sizeof(half);
 
-    *((uint32_t *)(lane_ptr0)) = RC[i][j][0];
-    *((uint32_t *)(lane_ptr1)) = RC[i][j][1];
-}
-```
 
-* Figure-6 是结果从寄存器拷贝到 shared memory 的过程
 
-<img src="/home/raymond/workspace/mmmove/hgemm/docs/mma/mma_base/imgs/matrix_C_LSD.png" alt="matrix_C_LSD" style="zoom:80%;" />
 
-<center> Figure-6 <center>
-
-* shared memory 中之前的 Matrix A 和 Matrix B 的数据在这里被结果值覆盖
-* 因为结果已经计算完成，不再需要 Matrix A 和 Matrix B 的原始数据
 
 ### load result from SRAM to HBM
 
-```c++
-/* store Matrix C result from SRAM to HBM */
-void __device__ __inline__ ldsC_base(int i, const int N, 
-                                     const size_t lane_id, 
-                                     const half* src_gmem_warp_stream_ptr,
-                                     const half* smem_warp_stream_ptr) {
-    // tid=0, 1, ...,15 ==> lane_id/16=0
-    // tid=16,17,...,31 ==> lane_id/16=1
-    *((float4*)(src_gmem_warp_stream_ptr + (i*2+(lane_id>>4))*N)+(lane_id&15)) =
-        *((float4*)(smem_warp_stream_ptr + (i*2+(lane_id>>4))*C_SMEM_STRIDE)+(lane_id&15));
 
-}
+
+
+
+
+
+
+
+
+
+### 4. from Shared Memory to Register and calculation
+
+下面的 Figure-5  是每个 Warp 内部 Tile 的计算过程
+
+
+
+<center> Figure-5 <center>
+
+
+
+
+
+* 需要注意的是 Figure-5 中 shared memory 里 
+
+  * A 矩阵部分（图中四个绿色块块），每个 thread 是直接对准 shared memory 相应的行
+  * B 矩阵部分（图中两个蓝色块块），每个 thread 实际上对准的是 shared memory 里的行，图中画出来的对应关系是 transpose 后的结果
+* 
+
+
+
+### 5. from Register to Shared Memory
+
+```c++
+157 #pragma unroll
+158     for (size_t i = 0; i < WARP_COL_TILES; ++i) {
+159 #pragma unroll
+160         for (size_t j = 0; j < WARP_ROW_TILES; ++j) {
+161             half *lane_ptr0 = smem_warp_tile_row_ptr + (i * MMA_M + lane_id / 4) * C_SMEM_STRIDE +
+162                               (warp_id % BLOCK_ROW_WARPS) * C_SMEM_OFFSET + j * MMA_N +
+163                               (lane_id % 4) * sizeof(uint32_t) / sizeof(half);
+164             half *lane_ptr1 = smem_warp_tile_row_ptr + (i * MMA_M + lane_id / 4 + 8) * C_SMEM_STRIDE +
+165                               (warp_id % BLOCK_ROW_WARPS) * C_SMEM_OFFSET + j * MMA_N +
+166                               (lane_id % 4) * sizeof(uint32_t) / sizeof(half);
+167
+168             *((uint32_t *)(lane_ptr0)) = RC[i][j][0];
+169             *((uint32_t *)(lane_ptr1)) = RC[i][j][1];
+170         }
+171     }
+172
+173     __syncthreads();
 ```
 
-* Figure-7 是结果从 shared memory 寄存器拷贝到 global memory 的过程
+Figure-6  是将寄存器结果搬移到 shared memory 的过程
 
-  <img src="/home/raymond/workspace/mmmove/hgemm/docs/mma/mma_base/imgs/smem2gmem.png" alt="smem2gmem" style="zoom:80%;" />
+<img src="imgs/matrix_C_LSD.drawio.png" alt="matrix_C_LSD.drawio" style="zoom:80%;" />
+
+<center> Figure-6 <center>
+
+* 这里寄存器 RC 赋值给 shared memory 中对应位置索引
+
+* 要说明的是，这里的 shared memory 的形状和之前 Figure-2 & Figure-3 不同
+
+  * Figure-2 & Figure-3 中 shared memory 是 (256+128)*32
+
+  * 这里的 shared memory 是 256 *128
+
+  * 这两种不同的形状无关紧要，
+
+    * 因为 shared memory 可以认为是 row-major
+    * 在存储空间上是一维的，只要一维的存储空间足够，什么形状的都无所谓
+
+  * 在确定 shared memory 大小的相关代码中其实已经判断了是否有足够的空间
+
+    ```c++
+    189     size_t smem_max_size =
+    190         std::max((BLOCK_ROWS + BLOCK_COLS) * AB_SMEM_STRIDE * sizeof(half), BLOCK_ROWS * C_SMEM_STRIDE * sizeof(half));
+    191     HLOG("smem_max_size: %.0f KBytes (%zu Bytes)", static_cast<double>(smem_max_size) / 1024, smem_max_size);
+    192
+    193     HGEMM_CHECK_GT(dev_prop.sharedMemPerMultiprocessor, smem_max_size);
+    194     HGEMM_CHECK_CUDART_ERROR(
+    195         cudaFuncSetAttribute(mmaBaseKernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_max_size));
+    
+    ```
+
+    * AB_SMEM_STRIDE 是宏定义，大小是32
+    * 实际上，smem_max_size = max(  (256+128)*32, 256 *128  ) \* sizeof(half)
+
+  
+
+### 6. from Shared Memory to Global Memory
+
+```c++
+175 #pragma unroll
+176     for (size_t i = 0; i < MMA_M; ++i) {
+177         *((int4 *)(src_gmem_warp_stream_ptr + (i * 2 + lane_id / 16) * N) + lane_id % 16) =
+178             *((int4 *)(smem_warp_stream_ptr + (i * 2 + lane_id / 16) * C_SMEM_STRIDE) + lane_id % 16);
+179     }
+180 }
+```
+
+Figure-7  是将 shared memory 结果搬移到 global memory 的过程
+
+<img src="imgs/smem2gmem.drawio.png" alt="smem2gmem.drawio" style="zoom:80%;" />
 
 <center> Figure-7 <center>
 
-### Pipeline
+* 这里的 shared memory 依然是 256 *128
+* 最终将 block 对应的 shared memory 的结果放到矩阵 C 中
 
-* Figure-8 是整体的 pipeline
 
-  ![pipeline](/home/raymond/workspace/mmmove/hgemm/docs/mma/mma_base/imgs/pipeline.png)
 
-<center> Figure-8 <center>
+### 7. Pipeline 
 
-* LDGSTS: load Matrix A & B from HBM to SRAM
-* LDS: load Matrix A & B from SRAM to Register
-* calc: calc mma C=A@B 
-* STS: store results from Register to SRAM
-* STG: store results from SRAM to HBM
+* Figure-8 是一个 warp 内所有 thread 的 pipeline
 
-### Performance
+  <img src="imgs/pipeline.drawio.png" alt="pipeline.drawio" style="zoom:120%;" />
 
-测试的矩阵尺寸为 M=N=K=4096
 
-Figure-9 是 base 版本的 ncu 性能指标
 
-<img src="/home/raymond/workspace/mmmove/hgemm/docs/mma/mma_base/imgs/mma-base-perf.png" alt="mma-base-perf" style="zoom:80%;" />
+* LDGSTS：load from global memory; store to shared memory
 
-<center> Figure-9 <center>
-
-* 耗时 3ms
-
-Figure-10 是 base 版本的 memory 指标
-
-<img src="/home/raymond/workspace/mmmove/hgemm/docs/mma/mma_base/imgs/mma-base-mem-perf.png" alt="mma-base-mem-perf" style="zoom:80%;" />
-
-<center> Figure-10 <center>
-
-* 存在比较严重的 bank conflict
+* S2R: from Shared memory to Register
+* calc: Tile calculation
+* R2S: from Register to Shared memory
+* LDS: load from shared memory to global memory
 

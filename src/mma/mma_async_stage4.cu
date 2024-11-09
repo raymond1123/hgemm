@@ -2,6 +2,8 @@
 // Description: mma async stage4 hgemm
 
 #include "common.h"
+#include "tensor_core_util.cuh"
+
 #define K_STAGE 4
 
 __global__ void mmaAsyncStage4Kernel(const half *__restrict__ A, const half *__restrict__ B, half *__restrict__ C,
@@ -32,9 +34,7 @@ __global__ void mmaAsyncStage4Kernel(const half *__restrict__ A, const half *__r
     swizzle(&block_tile_i, &block_tile_j);
     if (block_tile_i >= M_tiles || block_tile_j >= N_tiles) return;
 
-    constexpr size_t B_smem_idx_off = BLOCK_ROWS;
     constexpr size_t smem_stage_off = BLOCK_ROWS + BLOCK_COLS;
-
     // get the address of exact row to put in SRAM
     const half *A_warp_ptr = &A(block_tile_i, warp_id); 
     const half *B_warp_ptr = &B(block_tile_j, warp_id);

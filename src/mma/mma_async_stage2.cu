@@ -5,6 +5,8 @@
 // Description: mma async stage2 hgemm
 
 #include "common.h"
+#include "tensor_core_util.cuh"
+
 #define K_STAGE 2
 
 __global__ void mmaAsyncStage2Kernel(const half *__restrict__ A, const half *__restrict__ B, half *__restrict__ C,

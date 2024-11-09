@@ -1,6 +1,15 @@
-// Author: Raymond
+// Copyright 2023. All Rights Reserved.
+// Original Author: Bruce-Lee-LY
+// Create Date: 21:02:28 on Tue, Feb 28, 2023
+// Original link: https://github.com/Bruce-Lee-LY/cuda_hgemm
+//
+// Modified by Raymond 
+// Modified Date: 08:39:58 on Sat, Nov 09, 2024
+// Modified link: https://github.com/raymond1123/hgemm
+// Description: mma permuted hgemm
 
 #include "common.h"
+#include "tensor_core_util.cuh"
 
 __global__ void mmaBaseKernel(const half *__restrict__ A, 
                               const half *__restrict__ B, 
@@ -20,6 +29,8 @@ __global__ void mmaBaseKernel(const half *__restrict__ A,
     const size_t warp_id = threadIdx.x>>5;  // warp_id=0,1,...,7
     const size_t lane_id = threadIdx.x&31;
 
+    uint32_t RA[WARP_COL_TILES][4]; // RA[4][4]
+    uint32_t RB[WARP_ROW_TILES][2]; // RB[8][2]
     // RC[4][8][2];
     uint32_t RC[WARP_COL_TILES][WARP_ROW_TILES][2];
     memset(RC, 0, sizeof(RC));
@@ -42,9 +53,6 @@ __global__ void mmaBaseKernel(const half *__restrict__ A,
         ldgstsB_base(warp_id, lane_id, B_warp_ptr, tile_k, K, smemB);
 
         __syncthreads();
-
-        uint32_t RA[WARP_COL_TILES][4]; // RA[4][4]
-        uint32_t RB[WARP_ROW_TILES][2]; // RB[8][2]
 
         #pragma unroll
         for (size_t k_step = 0; k_step < CHUNK_K; ++k_step) {
@@ -75,22 +83,30 @@ __global__ void mmaBaseKernel(const half *__restrict__ A,
 
         every block has 8 warps, split into 4 rows and 2 cols 
         every warp holds 64x64 half elements
+        warp_id>>1 = [0,0, 1,1, 2,2, 3,3]
         (warp_id>>1)<<13 represents how many elements jumped over
         left shift 13 stands for 64*128
     */
-    half *smem_warp_tile_row_ptr = smemC + ((warp_id>>1)<<13);
+    int warp_offset = (warp_id&1)*C_SMEM_OFFSET;
+    half* smem_warp_tile_ptr = smemC + ((warp_id>>1)<<13) + warp_offset;
     #pragma unroll
-    for (size_t i = 0; i < WARP_COL_TILES; ++i) { // i=0,1,2,3
+    for (size_t i = 0; i < WARP_COL_TILES; ++i) {
         #pragma unroll
-        for (size_t j = 0; j < WARP_ROW_TILES; ++j)  // j=0,1,...,7
-            stsC_base(i, j, warp_id, lane_id, smem_warp_tile_row_ptr, RC);
+        for (size_t j = 0; j < WARP_ROW_TILES; ++j)
+            stsC_base(i, j, warp_id, lane_id, smem_warp_tile_ptr, RC);
     }
 
     __syncthreads();
 
-    const size_t gmem_idx = (block_tile_i + warp_id * 2) * MMA_M * N + block_tile_j * MMA_N;
-    const half *src_gmem_warp_stream_ptr = &C[gmem_idx];
-    const half *smem_warp_stream_ptr = smemC + warp_id*2*MMA_M*C_SMEM_STRIDE;
+    /*
+        every warp takes responds of 2*MMA_M rows
+    */
+    int row_c = (block_tile_i + (warp_id<<1));
+    int col_c = block_tile_j;
+    int row_smem = (warp_id<<1)*MMA_M;
+
+    const half *src_gmem_warp_stream_ptr = &C(row_c, col_c);
+    const half *smem_warp_stream_ptr = SMEMC(row_smem);
 
     /* step 6: load result from SRAM to HBM */
     #pragma unroll

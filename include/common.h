@@ -12,7 +12,7 @@
 #include "mma.h"
 #include "ptx.h"
 #include "util.h"
-#include "util.cuh"
+//#include "util.cuh"
 
 #define HGEMM_LIKELY(x) __builtin_expect(!!(x), 1)
 #define HGEMM_UNLIKELY(x) __builtin_expect(!!(x), 0)

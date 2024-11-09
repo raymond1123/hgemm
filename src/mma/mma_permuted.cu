@@ -5,6 +5,7 @@
 // Description: mma permuted hgemm
 
 #include "common.h"
+#include "tensor_core_util.cuh"
 
 __global__ void mmaPermutedKernel(const half *__restrict__ A, const half *__restrict__ B, half *__restrict__ C,
                                   size_t M, size_t N, size_t K) {
@@ -75,7 +76,7 @@ __global__ void mmaPermutedKernel(const half *__restrict__ A, const half *__rest
     /* step 5: load result from Register to SRAM */
     half *smem_warp_tile_row_ptr = smemC + ((warp_id>>1)<<13);
 
-    #pragma unroll
+    //#pragma unroll
     for (size_t i = 0; i < WARP_COL_TILES; ++i) {
         #pragma unroll
         for (size_t j = 0; j < WARP_ROW_TILES; ++j)

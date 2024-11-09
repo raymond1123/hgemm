@@ -5,6 +5,7 @@
 // Description: mma async hgemm
 
 #include "common.h"
+#include "tensor_core_util.cuh"
 
 __global__ void mmaAsyncKernel(const half *__restrict__ A, const half *__restrict__ B, half *__restrict__ C, size_t M,
                                size_t N, size_t K) {
