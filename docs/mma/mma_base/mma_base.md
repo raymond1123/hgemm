@@ -183,7 +183,7 @@ void __device__ __inline__ ldgstsB_base(const size_t warp_id, const size_t lane_
 
 ### load Matrix A & B from SRAM to Register
 
-* load A to Register
+#### load A to Register
 
 ```c++
 #define WARP_ROWS 64
@@ -220,7 +220,7 @@ void __device__ __inline__ ldsA_base(int i, int k_step,
 
 
 
-* load B to Register
+#### load B to Register
 
 ```c++
 #define WARP_COLS 64

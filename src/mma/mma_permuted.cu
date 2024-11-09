@@ -23,6 +23,8 @@ __global__ void mmaPermutedKernel(const half *__restrict__ A, const half *__rest
     const size_t warp_id = threadIdx.x>>5;  // warp_id=0,1,...,7
     const size_t lane_id = threadIdx.x&31;
 
+    uint32_t RA[WARP_COL_TILES][4]; // RA[4][4]
+    uint32_t RB[WARP_ROW_TILES][2]; // RB[8][2]
     // RC[4][8][2];
     uint32_t RC[WARP_COL_TILES][WARP_ROW_TILES][2];
     memset(RC, 0, sizeof(RC));
@@ -46,8 +48,8 @@ __global__ void mmaPermutedKernel(const half *__restrict__ A, const half *__rest
 
         __syncthreads();
 
-        uint32_t RA[WARP_COL_TILES][4]; // RA[4][4]
-        uint32_t RB[WARP_ROW_TILES][2]; // RA[8][2]
+        //uint32_t RA[WARP_COL_TILES][4]; // RA[4][4]
+        //uint32_t RB[WARP_ROW_TILES][2]; // RA[8][2]
 
         #pragma unroll
         for (size_t k_step = 0; k_step < CHUNK_K; ++k_step) {
@@ -70,24 +72,27 @@ __global__ void mmaPermutedKernel(const half *__restrict__ A, const half *__rest
             }
         }
 
-        __syncthreads();
+        //__syncthreads();
     }
 
     /* step 5: load result from Register to SRAM */
-    half *smem_warp_tile_row_ptr = smemC + ((warp_id>>1)<<13);
+    half* smem_warp_tile_ptr = smemC + ((warp_id>>1)<<13);
 
-    //#pragma unroll
+    #pragma unroll
     for (size_t i = 0; i < WARP_COL_TILES; ++i) {
         #pragma unroll
         for (size_t j = 0; j < WARP_ROW_TILES; ++j)
-            stsC_permute(i, j, warp_id, lane_id, smem_warp_tile_row_ptr, RC);
+            stsC_permute(i, j, warp_id, lane_id, smem_warp_tile_ptr, RC);
     }
 
     __syncthreads();
 
-    const half *smem_warp_stream_ptr = smemC + warp_id * MMA_M * 2 * C_SMEM_STRIDE;
-    const size_t gmem_idx = (block_tile_i + warp_id * 2) * MMA_M * N + block_tile_j * MMA_N;
-    const half *src_gmem_warp_stream_ptr = &C[gmem_idx];
+    int row_c = block_tile_i + (warp_id<<1);
+    int col_c = block_tile_j;
+    int row_smem = (warp_id<<1)*MMA_M;
+
+    const half *src_gmem_warp_stream_ptr = &C(row_c, col_c);
+    const half *smem_warp_stream_ptr = SMEMC(row_smem);
 
     /* step 6: load result from SRAM to HBM */
     #pragma unroll

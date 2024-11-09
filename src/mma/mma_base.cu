@@ -75,7 +75,7 @@ __global__ void mmaBaseKernel(const half *__restrict__ A,
             }
         }
 
-        __syncthreads();
+        //__syncthreads();
     }
 
     /* 

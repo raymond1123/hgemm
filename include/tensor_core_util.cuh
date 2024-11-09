@@ -244,7 +244,6 @@ void __device__ __inline__ ldsC_base(int i, const int N,
     // tid=16,17,...,31 ==> lane_id/16=1
     *((float4*)(src_gmem_warp_stream_ptr + (i*2+(lane_id>>4))*N)+(lane_id&15)) =
         *((float4*)(smem_warp_stream_ptr + (i*2+(lane_id>>4))*C_SMEM_STRIDE)+(lane_id&15));
-
 }
 
 /* ============== permutation version ============= */
@@ -261,8 +260,13 @@ void __device__ __inline__ ldgstsA_permute(const size_t warp_id, const size_t la
     int lane_row = lane_id>>2, lane_col=lane_id&3; 
     float4* A_lane_ptr = (float4*)(A_WARP_TILE(lane_row, lane_col));
 
+    /* 
+        ((row_A&7)>>1) = [0,0, 1,1, 2,2, 3,3]
+        this is actually col offset
+        the final '&3' is to reverse the residual to the beginning
+    */
     size_t row_A = (warp_id<<5)+lane_row;
-    size_t col_A = ((lane_col+((row_A&7)>>1))&3)<< 3;
+    size_t col_A = ((lane_col+((row_A&7)>>1))&3)<<3;
 
     #pragma unroll
     for (size_t i = 0; i < 4; ++i) {
@@ -285,6 +289,11 @@ void __device__ __inline__ ldgstsB_permute(const size_t warp_id, const size_t la
     int lane_row = lane_id&3, lane_col=lane_id>>2; 
     float4* B_lane_ptr = (float4*)(B_WARP_TILE(lane_row, lane_col));
 
+    /* 
+        ((row_B&7)>>1) = [0,0, 1,1, 2,2, 3,3]
+        the same as row_A, this is actually col offset
+        the final '&3' is to take the residual to the beginning position
+    */
     size_t row_B = (warp_id<<4)+lane_col;
     size_t col_B = ((lane_row+((row_B&7)>>1))&3)<<3; 
 
@@ -300,8 +309,8 @@ void __device__ __inline__ ldgstsB_permute(const size_t warp_id, const size_t la
 }
 
 /* load Matrix A data from SRAM to Register:
-    in permute version, 
-    only lane_col is different, considering bank conflict */
+   in permute version, 
+   only lane_col is different, considering bank conflict */
 void __device__ __inline__ ldsA_permute(int i, int k_step, 
                                 const size_t warp_id, const size_t lane_id,
                                 half* smemA, uint32_t RA[WARP_COL_TILES][4]) {
@@ -309,6 +318,12 @@ void __device__ __inline__ ldsA_permute(int i, int k_step,
     size_t warp_row = (warp_id>>1)*WARP_ROWS + i*MMA_M;
     size_t warp_col = k_step*MMA_K;
 
+    /*  
+        (((lane_id&15)&7)>>1)<<3;
+        ((lane_id&15)&7) = ([0,1,...,7,      0,1,...,7,       0,1,...,7,       0,1,...,7])>>1
+                         = [0,0,1,1,...,3,3, 0,0,1,1,...,3,3, 0,0,1,1,...,3,3, 0,0,1,1,...,3,3]
+        the final '&31' is to take the residual to the beginning position
+    */
     size_t lane_row = warp_row + (lane_id&15);
     size_t lane_col = warp_col + ((lane_id>>4)<<3) + ((((lane_id&15)&7)>>1)<<3);
     lane_col &= 31; 
@@ -341,18 +356,24 @@ void __device__ __inline__ ldsB_permute(int j, int k_step,
 
 /* store Matrix C result from Register RC to SRAM */
 void __device__ __inline__ stsC_permute(int i, int j, const size_t warp_id, const size_t lane_id, 
-                                        half* smem_warp_tile_row_ptr, 
+                                        half* smem_warp_tile_ptr, 
                                         uint32_t RC[WARP_COL_TILES][WARP_ROW_TILES][2]) {
 
-    half *lane_ptr0 = smem_warp_tile_row_ptr + 
-                      (i * MMA_M + (lane_id>>2)) * C_SMEM_STRIDE +
-                      (((warp_id&1) * C_SMEM_OFFSET + j * MMA_N +
+    int row = i*MMA_M + (lane_id>>2);
+    int col = j*MMA_N;
+    int warp_offset = (warp_id&1)*C_SMEM_OFFSET;
+
+    /* 
+        (lane_id>>2)&7 = [0,0,0,0, 1,1,1,1, ..., 7,7,7,7]
+        this is offset of permute of cols
+    */
+    half *lane_ptr0 = smem_warp_tile_ptr + row*C_SMEM_STRIDE + 
+                      ((warp_offset + col +
                       (lane_id&3) * sizeof(uint32_t) / sizeof(half) + 
                       (((lane_id>>2)&7)<<3))&127);
 
-    half *lane_ptr1 = smem_warp_tile_row_ptr + 
-                      (i * MMA_M + (lane_id>>2) + 8) * C_SMEM_STRIDE +
-                      (((warp_id&1) * C_SMEM_OFFSET + j * MMA_N +
+    half *lane_ptr1 = smem_warp_tile_ptr + (row+8) * C_SMEM_STRIDE +
+                      ((warp_offset + col +
                       (lane_id&3) * sizeof(uint32_t) / sizeof(half) + 
                       ((((lane_id>>2)+8)&7)<<3))&127);
 
@@ -367,6 +388,11 @@ void __device__ __inline__ ldsC_permute(int i, const int N,
                                         const half* smem_warp_stream_ptr) {
     // tid=0, 1, ...,15 ==> lane_id/16=0
     // tid=16,17,...,31 ==> lane_id/16=1
+
+    /*  
+        lane_id>>4 = [0,0,0,0, 1,1,1,1, ..., 7,7,7,7]
+        (lane_id>>4)&7 = [0,0,0,0, 1,1,1,1, ..., 7,7,7,7]
+    */
     *((float4*)(src_gmem_warp_stream_ptr + (i*2+(lane_id>>4))*N)+(lane_id&15)) =
         *((float4*)(smem_warp_stream_ptr + (i*2+(lane_id>>4))*C_SMEM_STRIDE)+
               (((lane_id&15)+(i*2+(lane_id>>4)&7))&15));
