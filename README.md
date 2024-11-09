@@ -10,8 +10,8 @@
 
 ### mma 
 
-* [mma_base 分析](mma/mma_base/mma_base.md)
-* [mma_permute 分析](mma/mma_permute/mma_permuted.md)
+* [mma_base 分析](docs/mma/mma_base/mma_base.md)
+* [mma_permute 分析](docs/mma/mma_permute/mma_permuted.md)
 
 
 
