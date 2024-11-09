@@ -320,7 +320,7 @@ void __device__ __inline__ stsC_base(int i, int j, const size_t warp_id, const s
 
 * Figure-6 是结果从寄存器拷贝到 shared memory 的过程
 
-<img src="/home/raymond/workspace/mmmove/hgemm/docs/mma/mma_base/imgs/matrix_C_LSD.png" alt="matrix_C_LSD" style="zoom:80%;" />
+<img src="imgs/matrix_C_LSD.png" alt="matrix_C_LSD" style="zoom:80%;" />
 
 <center> Figure-6 <center>
 
@@ -345,7 +345,7 @@ void __device__ __inline__ ldsC_base(int i, const int N,
 
 * Figure-7 是结果从 shared memory 寄存器拷贝到 global memory 的过程
 
-  <img src="/home/raymond/workspace/mmmove/hgemm/docs/mma/mma_base/imgs/smem2gmem.png" alt="smem2gmem" style="zoom:80%;" />
+  <img src="imgs/smem2gmem.png" alt="smem2gmem" style="zoom:80%;" />
 
 <center> Figure-7 <center>
 
@@ -353,7 +353,7 @@ void __device__ __inline__ ldsC_base(int i, const int N,
 
 * Figure-8 是整体的 pipeline
 
-  ![pipeline](/home/raymond/workspace/mmmove/hgemm/docs/mma/mma_base/imgs/pipeline.png)
+  ![pipeline](imgs/pipeline.png)
 
 <center> Figure-8 <center>
 
@@ -369,7 +369,7 @@ void __device__ __inline__ ldsC_base(int i, const int N,
 
 Figure-9 是 base 版本的 ncu 性能指标
 
-<img src="/home/raymond/workspace/mmmove/hgemm/docs/mma/mma_base/imgs/mma-base-perf.png" alt="mma-base-perf" style="zoom:80%;" />
+<img src="imgs/mma-base-perf.png" alt="mma-base-perf" style="zoom:80%;" />
 
 <center> Figure-9 <center>
 
@@ -377,7 +377,7 @@ Figure-9 是 base 版本的 ncu 性能指标
 
 Figure-10 是 base 版本的 memory 指标
 
-<img src="/home/raymond/workspace/mmmove/hgemm/docs/mma/mma_base/imgs/mma-base-mem-perf.png" alt="mma-base-mem-perf" style="zoom:80%;" />
+<img src="imgs/mma-base-mem-perf.png" alt="mma-base-mem-perf" style="zoom:80%;" />
 
 <center> Figure-10 <center>
 
